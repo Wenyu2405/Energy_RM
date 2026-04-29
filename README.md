@@ -6,27 +6,21 @@
 
 
 Energy/
+
 ├──good #标注文件
+
 ├──pic #照片
+
 ├──good_old #旧的标注文件（可不用）
+
 ├──good_old #新的标注文件 （可不用）
-├── datasets/
-│ └── power_rune/ # 原始数据集
-├── yolo_dataset/ # YOLO 格式数据集
-│ ├── images/
-│ │ ├── train/
-│ │ └── val/ # 1523 张验证图片
-│ └── labels/
-│ ├── train/
-│ └── val/
-├── runs1/power_rune/train_v12/
-│ └── weights/
-│ ├── best.pt # PyTorch 原始权重
-│ ├── best_openvino_model/ # FP16 OpenVINO 模型
-│ └── best_int8_openvino_model/ # INT8 OpenVINO 模型
+
 ├── quantize.py # INT8 量化脚本
+
 ├── deploy.py # FP16 vs INT8 对比测试
+
 ├── debug_output_v2.py # 模型输出调试工具
+
 └── test_results/ # 对比可视化结果
 
 
