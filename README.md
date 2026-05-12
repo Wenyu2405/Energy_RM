@@ -23,6 +23,9 @@ Energy/
 
 └── test_results/ # 对比可视化结果
 
+├── Aconvert_to_yolo_pose.py 顺时针
+
+└── convert_to_yolo_pose.py #逆时针
 
 ## 模型参数
 
