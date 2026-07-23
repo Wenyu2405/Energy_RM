@@ -13,8 +13,9 @@ from pathlib import Path
 # ============================================================
 # 配置
 # ============================================================
-FP16_MODEL = "runs1/power_rune/train_v12/weights/best_openvino_model"
-INT8_MODEL = "runs1/power_rune/train_v12/weights/best_int8_openvino_model"
+
+FP16_MODEL = "runs/power_rune/train_v3_no_rotation/weights/best_openvino_model"
+INT8_MODEL = "runs/power_rune/train_v3_no_rotation/weights/best_int8_openvino_model"
 
 # 测试图片目录，改成你自己的验证集路径
 TEST_IMG_DIR = "yolo_dataset/images/val"
@@ -62,10 +63,10 @@ def test_with_ultralytics():
     # 加载模型
     # ----------------------------------------------------------
     print("\n加载 FP16 模型...")
-    model_fp16 = YOLO(FP16_MODEL)
+    model_fp16 = YOLO(FP16_MODEL, task="pose")
 
     print("加载 INT8 模型...")
-    model_int8 = YOLO(INT8_MODEL)
+    model_int8 = YOLO(INT8_MODEL, task="pose")
 
     # ----------------------------------------------------------
     # 速度测试
@@ -161,27 +162,40 @@ def test_with_ultralytics():
     data_yaml = find_data_yaml()
     if data_yaml:
         print("\n" + "=" * 60)
-        print("mAP 评估（验证集）")
+        print(f"mAP 评估（验证集） data={data_yaml}")
         print("=" * 60)
 
+        # verbose=True 以打印每类明细，重点看 box 类的 Pose mAP
         print("\nFP16 mAP:")
-        metrics_fp16 = model_fp16.val(data=data_yaml, imgsz=IMG_SIZE, verbose=False)
-        print(f"  mAP50:    {metrics_fp16.box.map50:.4f}")
-        print(f"  mAP50-95: {metrics_fp16.box.map:.4f}")
+        metrics_fp16 = model_fp16.val(data=data_yaml, imgsz=IMG_SIZE, verbose=True)
+        print(f"  Box  mAP50:    {metrics_fp16.box.map50:.4f}")
+        print(f"  Box  mAP50-95: {metrics_fp16.box.map:.4f}")
+        print(f"  Pose mAP50:    {metrics_fp16.pose.map50:.4f}")
+        print(f"  Pose mAP50-95: {metrics_fp16.pose.map:.4f}")
 
         print("\nINT8 mAP:")
-        metrics_int8 = model_int8.val(data=data_yaml, imgsz=IMG_SIZE, verbose=False)
-        print(f"  mAP50:    {metrics_int8.box.map50:.4f}")
-        print(f"  mAP50-95: {metrics_int8.box.map:.4f}")
+        metrics_int8 = model_int8.val(data=data_yaml, imgsz=IMG_SIZE, verbose=True)
+        print(f"  Box  mAP50:    {metrics_int8.box.map50:.4f}")
+        print(f"  Box  mAP50-95: {metrics_int8.box.map:.4f}")
+        print(f"  Pose mAP50:    {metrics_int8.pose.map50:.4f}")
+        print(f"  Pose mAP50-95: {metrics_int8.pose.map:.4f}")
 
-        map_drop = (metrics_fp16.box.map50 - metrics_int8.box.map50) / metrics_fp16.box.map50 * 100
-        print(f"\nmAP50 下降: {map_drop:.2f}%")
-        if abs(map_drop) < 1:
-            print("量化质量: 优秀（下降 < 1%）")
-        elif abs(map_drop) < 3:
-            print("量化质量: 良好（下降 < 3%）")
+        # Box mAP 下降
+        box_drop = (metrics_fp16.box.map50 - metrics_int8.box.map50) / max(metrics_fp16.box.map50, 1e-9) * 100
+        print(f"\nBox  mAP50 下降: {box_drop:.2f}%")
+
+        # Pose mAP 下降（角点质量，真正关心的）
+        pose_drop = (metrics_fp16.pose.map50 - metrics_int8.pose.map50) / max(metrics_fp16.pose.map50, 1e-9) * 100
+        print(f"Pose mAP50 下降: {pose_drop:.2f}%")
+        if abs(pose_drop) < 1:
+            print("角点量化质量: 优秀（下降 < 1%）")
+        elif abs(pose_drop) < 3:
+            print("角点量化质量: 良好（下降 < 3%）")
         else:
-            print("量化质量: 需要关注（下降 >= 3%）")
+            print("角点量化质量: 需要关注（下降 >= 3%）— 考虑对 pose 输出层保 FP16")
+
+        print("\n注意: 上面的 Pose mAP 是所有类别的平均值，R 类没有角点标注会拉低数值。")
+        print("请看上方每类明细里 box 类的 Pose mAP，那才是真实的角点质量指标。")
     else:
         print(f"\n未找到 data.yaml，跳过 mAP 评估")
         print("如需 mAP 评估，请确保 data.yaml 路径正确")
@@ -197,7 +211,7 @@ def save_comparison(img_path, r_fp16, r_int8, idx):
     img_fp16 = img.copy()
     img_int8 = img.copy()
 
-    # 画 FP16 结果
+    # 画 FP16 结果（框 + 角点）
     if len(r_fp16.boxes) > 0:
         for box, conf, cls in zip(r_fp16.boxes.xyxy.cpu().numpy(),
                                    r_fp16.boxes.conf.cpu().numpy(),
@@ -207,8 +221,13 @@ def save_comparison(img_path, r_fp16, r_int8, idx):
             label = f"{int(cls)} {conf:.2f}"
             cv2.putText(img_fp16, label, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    if r_fp16.keypoints is not None and len(r_fp16.keypoints) > 0:
+        for kp in r_fp16.keypoints.xy.cpu().numpy():
+            for j, (kx, ky) in enumerate(kp):
+                if kx > 0 or ky > 0:
+                    cv2.circle(img_fp16, (int(kx), int(ky)), 3, (0, 200, 255), -1)
 
-    # 画 INT8 结果
+    # 画 INT8 结果（框 + 角点）
     if len(r_int8.boxes) > 0:
         for box, conf, cls in zip(r_int8.boxes.xyxy.cpu().numpy(),
                                    r_int8.boxes.conf.cpu().numpy(),
@@ -218,6 +237,11 @@ def save_comparison(img_path, r_fp16, r_int8, idx):
             label = f"{int(cls)} {conf:.2f}"
             cv2.putText(img_int8, label, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    if r_int8.keypoints is not None and len(r_int8.keypoints) > 0:
+        for kp in r_int8.keypoints.xy.cpu().numpy():
+            for j, (kx, ky) in enumerate(kp):
+                if kx > 0 or ky > 0:
+                    cv2.circle(img_int8, (int(kx), int(ky)), 3, (0, 200, 255), -1)
 
     # 添加标题
     cv2.putText(img_fp16, "FP16", (10, 30),
@@ -242,23 +266,16 @@ def save_comparison(img_path, r_fp16, r_int8, idx):
 def find_data_yaml():
     """尝试找到 data.yaml"""
     candidates = [
+        "yolo_dataset/dataset.yaml",                       # 你的实际路径，放最前
+        "/home/wenyu/Energy/yolo_dataset/dataset.yaml",
         "datasets/power_rune/data.yaml",
         "datasets/power_rune.yaml",
         "data/power_rune.yaml",
         "data.yaml",
-        "runs1/power_rune/train_v12/args.yaml",
     ]
     for c in candidates:
         if os.path.exists(c):
-            # 如果是 args.yaml，需要从中提取 data 路径
-            if "args.yaml" in c:
-                import yaml
-                with open(c) as f:
-                    args = yaml.safe_load(f)
-                if "data" in args and os.path.exists(args["data"]):
-                    return args["data"]
-            else:
-                return c
+            return c
     return None
 
 

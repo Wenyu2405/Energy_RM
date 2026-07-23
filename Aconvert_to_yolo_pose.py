@@ -1,0 +1,240 @@
+import json
+import os
+import shutil
+from pathlib import Path
+from sklearn.model_selection import train_test_split
+
+# ===== 配置 =====
+DATASETS = [
+    ("/home/wenyu/Energy/good", "/home/wenyu/Energy/pic"),
+    ("/home/wenyu/Energy/good_old", "/home/wenyu/Energy/pic_old"),
+]
+OUTPUT_DIR = "/home/wenyu/Energy/yolo_dataset"
+NUM_KEYPOINTS = 8
+# CLASSES = {"box": 0, "R": 1, "rect": 2}
+CLASSES = {"box": 0, "R": 1}
+VAL_RATIO = 0.2
+RANDOM_SEED = 42
+
+REMAP_OLD = {
+    "corner1": "corner3",
+    "corner2": "corner4",
+    "corner3": "corner5",
+    "corner4": "corner6",
+    "corner5": "corner7",
+    "corner6": "corner8",
+    "corner7": "corner1",
+    "corner8": "corner2",
+}
+
+
+def parse_json(json_path, remap=None):
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    img_w = data["imageWidth"]
+    img_h = data["imageHeight"]
+
+    rectangles = []
+    keypoints = {}
+
+    for shape in data["shapes"]:
+        label = shape["label"]
+        points = shape["points"]
+        shape_type = shape["shape_type"]
+
+        if shape_type == "rectangle":
+            rectangles.append((label, points))
+        elif shape_type == "point" and label.startswith("corner"):
+            if remap and label in remap:
+                label = remap[label]
+            keypoints[label] = points[0]
+
+    return img_w, img_h, rectangles, keypoints
+
+
+def rect_to_yolo(pts, img_w, img_h):
+    if len(pts) >= 4:
+        x1, y1 = pts[0]
+        x2, y2 = pts[2]
+    elif len(pts) == 2:
+        x1, y1 = pts[0]
+        x2, y2 = pts[1]
+    else:
+        return None
+
+    cx = ((x1 + x2) / 2) / img_w
+    cy = ((y1 + y2) / 2) / img_h
+    w = abs(x2 - x1) / img_w
+    h = abs(y2 - y1) / img_h
+
+    if not (0 <= cx <= 1 and 0 <= cy <= 1 and 0 < w <= 1 and 0 < h <= 1):
+        return None
+
+    return cx, cy, w, h
+
+
+def convert_one(json_path, remap=None):
+    img_w, img_h, rectangles, keypoints = parse_json(json_path, remap=remap)
+    lines = []
+
+    for label, pts in rectangles:
+        if label not in CLASSES:
+            continue
+
+        result = rect_to_yolo(pts, img_w, img_h)
+        if result is None:
+            continue
+
+        cx, cy, w, h = result
+        cls_id = CLASSES[label]
+
+        if label == "box":
+            kp_parts = []
+            for i in range(1, NUM_KEYPOINTS + 1):
+                key = f"corner{i}"
+                if key in keypoints:
+                    kx = keypoints[key][0] / img_w
+                    ky = keypoints[key][1] / img_h
+                    kx = max(0, min(1, kx))
+                    ky = max(0, min(1, ky))
+                    kp_parts.append(f"{kx:.6f} {ky:.6f} 2")
+                else:
+                    kp_parts.append("0 0 0")
+            kp_str = " ".join(kp_parts)
+        else:
+            kp_str = " ".join(["0 0 0"] * NUM_KEYPOINTS)
+
+        lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f} {kp_str}")
+
+    return lines
+
+
+def collect_all_samples():
+    samples = []
+
+    for idx, (json_dir, img_dir) in enumerate(DATASETS):
+        json_dir = Path(json_dir)
+        img_dir = Path(img_dir)
+
+        if not json_dir.exists():
+            print(f"[WARN] JSON 目录不存在: {json_dir}")
+            continue
+        if not img_dir.exists():
+            print(f"[WARN] 图片目录不存在: {img_dir}")
+            continue
+
+        json_files = sorted(json_dir.glob("*.json"))
+        print(f"数据集 {json_dir.name}: 找到 {len(json_files)} 个标注文件")
+
+        for json_path in json_files:
+            stem = json_path.stem
+            img_path = None
+            for ext in [".jpg", ".png", ".bmp", ".jpeg", ".JPG", ".PNG"]:
+                candidate = img_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    img_path = candidate
+                    break
+
+            if img_path is None:
+                print(f"  [WARN] 找不到图片: {stem} (在 {img_dir})")
+                continue
+
+            samples.append((json_path, img_path, idx))
+
+    return samples
+
+
+def build_dataset():
+    output = Path(OUTPUT_DIR)
+
+    # 清理旧数据，避免残留
+    if output.exists():
+        shutil.rmtree(output)
+        print(f"已清理旧目录: {output}")
+
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    samples = collect_all_samples()
+    print(f"\n总计 {len(samples)} 个有效样本")
+
+    if len(samples) == 0:
+        print("没有找到有效样本，请检查路径")
+        return
+
+    train_samples, val_samples = train_test_split(
+        samples, test_size=VAL_RATIO, random_state=RANDOM_SEED
+    )
+
+    class_count = {name: 0 for name in CLASSES}
+
+    for split, split_samples in [("train", train_samples), ("val", val_samples)]:
+        valid_count = 0
+        skip_count = 0
+
+        for json_path, img_path, dataset_idx in split_samples:
+            dataset_name = json_path.parent.name
+            safe_stem = f"{dataset_name}_{json_path.stem}"
+
+            remap = REMAP_OLD if dataset_idx == 1 else None
+            lines = convert_one(json_path, remap=remap)
+
+            if not lines:
+                skip_count += 1
+                continue
+
+            for line in lines:
+                cls_id = int(line.split()[0])
+                for name, cid in CLASSES.items():
+                    if cid == cls_id:
+                        class_count[name] += 1
+
+            label_path = output / "labels" / split / f"{safe_stem}.txt"
+            with open(label_path, 'w') as f:
+                f.write("\n".join(lines))
+
+            dst_img = output / "images" / split / f"{safe_stem}{img_path.suffix}"
+            shutil.copy2(img_path, dst_img)
+            valid_count += 1
+
+        print(f"{split}: {valid_count} 张有效, {skip_count} 张跳过")
+
+    print(f"\n类别分布:")
+    for name, count in class_count.items():
+        print(f"  {name} (id={CLASSES[name]}): {count}")
+
+#     yaml_content = f"""path: {output.resolve()}
+# train: images/train
+# val: images/val
+
+# kpt_shape: [{NUM_KEYPOINTS}, 3]
+
+# names:
+#   0: box
+#   1: R
+#   2: rect
+# """
+
+    yaml_content = f"""path: {output.resolve()}
+train: images/train
+val: images/val
+
+kpt_shape: [{NUM_KEYPOINTS}, 3]
+
+names:
+  0: box
+  1: R
+"""
+
+    yaml_path = output / "dataset.yaml"
+    with open(yaml_path, 'w') as f:
+        f.write(yaml_content)
+
+    print(f"\ndataset.yaml 已生成: {yaml_path}")
+    print("完成!")
+
+
+if __name__ == "__main__":
+    build_dataset()

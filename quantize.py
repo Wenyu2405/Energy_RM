@@ -1,15 +1,15 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 import cv2
 from pathlib import Path
 import openvino as ov
 import nncf
 
-FP16_MODEL = "/home/wenyu/Energy/runs1/power_rune/train_v12/weights/best_openvino_model/best.xml"
+FP16_MODEL = "/home/wenyu/Energy/runs/power_rune/train_v3_no_rotation/weights/best_openvino_model/best.xml"
 CALIB_DIR = "yolo_dataset/images/val"
-OUTPUT_DIR = "runs1/power_rune/train_v12/weights/best_int8_openvino_model"
-IMGSZ = 480
+OUTPUT_DIR = "/home/wenyu/Energy/runs/power_rune/train_v3_no_rotation/weights/best_int8_openvino_model"
+IMGSZ = 480# 480 → 640，必须和训练时一致
 SUBSET_SIZE = 300
-
 
 def letterbox(img, new_shape=480):
     h, w = img.shape[:2]
@@ -26,18 +26,16 @@ def letterbox(img, new_shape=480):
                              cv2.BORDER_CONSTANT, value=(114, 114, 114))
     return img
 
-
 def preprocess(img_path):
     img = cv2.imread(str(img_path))
     if img is None:
         return None
     img = letterbox(img, IMGSZ)
-    # 不做BGR→RGB转换
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)   # 新增，和训练/推理一致
     img = img.astype(np.float32) / 255.0
     img = img.transpose(2, 0, 1)
     img = np.expand_dims(img, 0)
     return img
-
 
 def main():
     core = ov.Core()
