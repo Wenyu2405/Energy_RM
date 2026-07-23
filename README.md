@@ -48,17 +48,29 @@
 
 
 Energy/
+
 ├── Aconvert_to_yolo_pose.py # 原始标注 → YOLO-Pose 格式（顺时针），含新老数据集角点对齐
+
 ├── convert_to_yolo_pose.py # 角点转换（逆时针版本）
+
 ├── train.py # 训练 + 导出 OpenVINO
+
 ├── quantize.py # INT8 量化（NNCF）
+
 ├── deploy.py # FP16 vs INT8 精度/速度对比
+
 ├── infer_openvino_video.py # 视频推理（逐帧检测 + 角点可视化）
+
 ├── check_labels.py # 标注可视化核对工具
+
 ├── good/ # 新标注文件
+
 ├── good_old/ # 旧标注文件
+
 ├── pic/ # 图片
+
 ├── yolo_dataset/ # 转换后的数据集（自动生成）
+
 └── test_results/ # FP16 vs INT8 对比可视化
 
 
